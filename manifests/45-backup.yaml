@@ -61,7 +61,8 @@ spec:
                 - |
                   set -euo pipefail
                   cd /var/www/discourse
-                  exec sudo -H -E -u discourse bundle exec rake discourse:backup
+                  exec sudo -H -E -u discourse bundle exec rails runner \
+                    'require "backup_restore"; BackupRestore.backup!(Discourse.system_user.id, publish_to_message_bus: false, with_uploads: SiteSetting.backup_with_uploads, fork: false)'
               envFrom:
                 - secretRef:
                     name: discourse-runtime
