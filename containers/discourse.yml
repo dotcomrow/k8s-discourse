@@ -33,6 +33,78 @@ volumes:
       host: /var/discourse/shared/discourse/log/var-log
       guest: /var/log
 
+hooks:
+  after_code:
+    - exec: mkdir -p $home/plugins/discourse-suncoast-admin-sync
+    - file:
+        path: $home/plugins/discourse-suncoast-admin-sync/plugin.rb
+        contents: |
+          # frozen_string_literal: true
+
+          # name: discourse-suncoast-admin-sync
+          # about: Reconciles Suncoast OIDC membership with Discourse administrator access
+          # version: 1.0.0
+          # authors: Suncoast Systems
+
+          module ::SuncoastDiscourseAdminSync
+            ADMIN_ROLE = "k8s_discourse_admins"
+            OIDC_PROVIDER = "oidc"
+            RECOVERY_ADMIN_USERNAME = "administrator"
+
+            def self.reconcile(user)
+              return if user.blank? || user.id.blank?
+
+              should_be_admin =
+                user
+                  .associated_groups
+                  .where(provider_name: OIDC_PROVIDER, provider_id: ADMIN_ROLE)
+                  .exists?
+
+              if should_be_admin && !user.admin?
+                user.grant_admin!
+                Rails.logger.warn(
+                  "Suncoast OIDC admin sync granted admin user_id=#{user.id} role=#{ADMIN_ROLE}",
+                )
+              elsif !should_be_admin && user.admin? && user.username != RECOVERY_ADMIN_USERNAME
+                user.revoke_admin!
+                Rails.logger.warn(
+                  "Suncoast OIDC admin sync revoked admin user_id=#{user.id} role=#{ADMIN_ROLE}",
+                )
+              end
+            rescue StandardError => e
+              Rails.logger.error(
+                "Suncoast OIDC admin sync failed user_id=#{user&.id}: #{e.class}: #{e.message}",
+              )
+            end
+
+            module UserAssociatedGroupExtension
+              extend ActiveSupport::Concern
+
+              included do
+                after_commit :reconcile_suncoast_oidc_admin
+              end
+
+              private
+
+              def reconcile_suncoast_oidc_admin
+                SuncoastDiscourseAdminSync.reconcile(user)
+              end
+            end
+          end
+
+          after_initialize do
+            reloadable_patch do
+              UserAssociatedGroup.include(
+                SuncoastDiscourseAdminSync::UserAssociatedGroupExtension,
+              )
+            end
+
+            DiscourseEvent.on(:user_logged_in) do |user|
+              SuncoastDiscourseAdminSync.reconcile(user)
+            end
+          end
+    - exec: chown -R discourse:www-data $home/plugins/discourse-suncoast-admin-sync
+
 run:
   - exec: echo "Suncoast Discourse image build complete"
   - exec:
