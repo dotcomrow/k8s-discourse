@@ -27,6 +27,8 @@ spec:
         reloader.stakater.com/auto: "true"
     spec:
       serviceAccountName: discourse
+      imagePullSecrets:
+        - name: discourse-ghcr
       terminationGracePeriodSeconds: 90
       initContainers:
         - name: database-tunnel

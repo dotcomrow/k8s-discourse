@@ -48,6 +48,8 @@ data:
     required_field secret/cloudflare-smtp-secret value >/dev/null
     required_field secret/graphql-kafka-async-username value >/dev/null
     required_field secret/graphql-kafka-async-password value >/dev/null
+    required_field secret/k8s-rules-engine-github-packages-username value >/dev/null
+    required_field secret/k8s-rules-engine-github-packages-token value >/dev/null
     TUNNEL_HOST="$(required_field secret/directus_db_ssh_tunnel_host value)"
     TUNNEL_KEY_B64="$(required_field secret/directus_db_ssh_private_key_b64 value)"
 
@@ -144,6 +146,12 @@ data:
       capabilities = ["read"]
     }
     path "secret/data/graphql-kafka-async-password" {
+      capabilities = ["read"]
+    }
+    path "secret/data/k8s-rules-engine-github-packages-username" {
+      capabilities = ["read"]
+    }
+    path "secret/data/k8s-rules-engine-github-packages-token" {
       capabilities = ["read"]
     }
     EOF

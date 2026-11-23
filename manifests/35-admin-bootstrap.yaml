@@ -61,6 +61,8 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccountName: discourse-admin-bootstrap
+      imagePullSecrets:
+        - name: discourse-ghcr
       initContainers:
         - name: database-tunnel
           image: alpine:3.22
