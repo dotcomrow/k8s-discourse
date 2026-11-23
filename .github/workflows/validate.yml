@@ -1,0 +1,18 @@
+name: Validate manifests
+
+on:
+  pull_request:
+  push:
+    branches: [prod]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5443c978fa # v4.2.2
+      - name: Validate repository
+        run: ./scripts/validate.sh

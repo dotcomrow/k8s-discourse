@@ -1,0 +1,66 @@
+name: Build Discourse image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [prod]
+    paths:
+      - containers/**
+      - .github/workflows/build.yml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: discourse-image-prod
+  cancel-in-progress: false
+
+env:
+  DISCOURSE_COMMIT: 97c86cedd020484e0fd51e8739ade8474352fec7
+  DISCOURSE_DOCKER_COMMIT: 93c8e629ea2b0960a4261b69a405e7d10f61a1ea
+  LAUNCHER_COMMIT: b338c1ec1913da37959ab24b042ebf57d09f2607
+  IMAGE: ghcr.io/dotcomrow/discourse
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5443c978fa # v4.2.2
+
+      - name: Authenticate to GHCR
+        run: echo "${{ secrets.GHCR_PAT || github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Fetch pinned official build sources
+        run: |
+          set -euo pipefail
+          git clone https://github.com/discourse/discourse_docker.git /tmp/discourse_docker
+          git -C /tmp/discourse_docker checkout --detach "${DISCOURSE_DOCKER_COMMIT}"
+          git clone https://github.com/discourse/launcher.git /tmp/discourse_launcher
+          git -C /tmp/discourse_launcher checkout --detach "${LAUNCHER_COMMIT}"
+          test "$(git -C /tmp/discourse_docker rev-parse HEAD)" = "${DISCOURSE_DOCKER_COMMIT}"
+          test "$(git -C /tmp/discourse_launcher rev-parse HEAD)" = "${LAUNCHER_COMMIT}"
+
+      - name: Build launcher
+        run: |
+          set -euo pipefail
+          cd /tmp/discourse_launcher/v2
+          go build -trimpath -o /tmp/discourse_docker/launcher .
+
+      - name: Build and publish Discourse
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/discourse_docker/containers
+          cp containers/discourse.yml /tmp/discourse_docker/containers/discourse.yml
+          /tmp/discourse_docker/launcher \
+            --conf-dir=/tmp/discourse_docker/containers \
+            --templates-dir=/tmp/discourse_docker \
+            build \
+            --tag "${IMAGE}:${DISCOURSE_COMMIT}" \
+            discourse \
+            --push \
+            --tag "${IMAGE}:latest"
+
+      - name: Record published image
+        run: docker buildx imagetools inspect "${IMAGE}:${DISCOURSE_COMMIT}"

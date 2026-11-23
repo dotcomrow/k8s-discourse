@@ -1,0 +1,37 @@
+templates:
+  - "templates/web.template.yml"
+  - "templates/web.ratelimited.template.yml"
+
+params:
+  version: "97c86cedd020484e0fd51e8739ade8474352fec7"
+  upload_size: "100m"
+
+env:
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+  LANGUAGE: en_US.UTF-8
+  DISCOURSE_HOSTNAME: discourse.teleport.app.suncoast.systems
+  DISCOURSE_SMTP_ADDRESS: smtp.mx.cloudflare.net
+  DISCOURSE_SMTP_PORT: "465"
+  DISCOURSE_SMTP_FORCE_TLS: "true"
+  DISCOURSE_SMTP_USER_NAME: api_token
+  DISCOURSE_NOTIFICATION_EMAIL: administrator@suncoast.systems
+  DISCOURSE_DB_SOCKET: ""
+  DISCOURSE_DB_HOST: 127.0.0.1
+  DISCOURSE_DB_PORT: "15432"
+  DISCOURSE_DB_NAME: discourse
+  DISCOURSE_DB_USERNAME: discourse
+  DISCOURSE_REDIS_HOST: redis-primary.redis.svc.cluster.local
+  DISCOURSE_REDIS_PORT: "6379"
+  DISCOURSE_REDIS_DB: "4"
+
+volumes:
+  - volume:
+      host: /var/discourse/shared/discourse
+      guest: /shared
+  - volume:
+      host: /var/discourse/shared/discourse/log/var-log
+      guest: /var/log
+
+run:
+  - exec: echo "Suncoast Discourse image build complete"

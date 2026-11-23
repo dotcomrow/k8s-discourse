@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: discourse-bootstrap
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: discourse
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: discourse
+        app.kubernetes.io/component: bootstrap
+      annotations:
+        linkerd.io/inject: "disabled"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      volumes:
+        - name: vault-root-token
+          secret:
+            secretName: vault-root-token
+        - name: bootstrap-script
+          configMap:
+            name: discourse-bootstrap
+            defaultMode: 0555
+      containers:
+        - name: bootstrap
+          image: hashicorp/vault:1.15.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VAULT_ADDR
+              value: http://vault.vault.svc.cluster.local:8200
+          command: ["/bin/sh", "/bootstrap/bootstrap.sh"]
+          volumeMounts:
+            - name: vault-root-token
+              mountPath: /vault-token
+              readOnly: true
+            - name: bootstrap-script
+              mountPath: /bootstrap
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 0
+            runAsGroup: 0

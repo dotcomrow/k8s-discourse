@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discourse-bootstrap
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: discourse
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  bootstrap.sh: |
+    #!/bin/sh
+    set -eu
+
+    apk add --no-cache postgresql-client jq openssh-client >/dev/null
+
+    if [ -s /vault-token/VAULT_TOKEN ]; then
+      export VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+    elif [ -s /vault-token/token ]; then
+      export VAULT_TOKEN="$(cat /vault-token/token)"
+    else
+      echo "Vault root-token file is unavailable" >&2
+      exit 1
+    fi
+
+    until vault status >/dev/null 2>&1; do
+      echo "Waiting for Vault..."
+      sleep 3
+    done
+
+    required_field() {
+      path="$1"
+      field="$2"
+      value="$(vault kv get -field="$field" "$path" 2>/dev/null || true)"
+      if [ -z "$value" ]; then
+        echo "Required Vault value is missing: path=$path key=$field" >&2
+        exit 1
+      fi
+      printf '%s' "$value"
+    }
+
+    DB_PASSWORD="$(required_field secret/discourse_db_password value)"
+    required_field secret/discourse_secret_key_base value >/dev/null
+    required_field secret/discourse_admin_password value >/dev/null
+    required_field secret/discourse_integration_api_key value >/dev/null
+    required_field secret/redis password >/dev/null
+    required_field secret/cloudflare-smtp-secret value >/dev/null
+    required_field secret/graphql-kafka-async-username value >/dev/null
+    required_field secret/graphql-kafka-async-password value >/dev/null
+    TUNNEL_HOST="$(required_field secret/directus_db_ssh_tunnel_host value)"
+    TUNNEL_KEY_B64="$(required_field secret/directus_db_ssh_private_key_b64 value)"
+
+    KEY_FILE="/tmp/discourse-db-tunnel.key"
+    KNOWN_HOSTS_FILE="/tmp/discourse-db-known-hosts"
+    if printf '%s' "$TUNNEL_KEY_B64" | base64 --decode >"$KEY_FILE" 2>/dev/null; then
+      true
+    elif printf '%s' "$TUNNEL_KEY_B64" | base64 -d >"$KEY_FILE" 2>/dev/null; then
+      true
+    else
+      printf '%s' "$TUNNEL_KEY_B64" | base64 -D >"$KEY_FILE"
+    fi
+    chmod 600 "$KEY_FILE"
+    touch "$KNOWN_HOSTS_FILE"
+
+    ssh_command() {
+      ssh -i "$KEY_FILE" \
+        -o BatchMode=yes \
+        -o IdentitiesOnly=yes \
+        -o ConnectTimeout=10 \
+        -o ConnectionAttempts=1 \
+        -o StrictHostKeyChecking=accept-new \
+        -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+        -p 22 "$@"
+    }
+
+    ADMIN_SSH_USER=""
+    for candidate in directus_tunnel ubuntu opc; do
+      if ssh_command "$candidate@$TUNNEL_HOST" "sudo -n -u postgres true" >/dev/null 2>&1; then
+        ADMIN_SSH_USER="$candidate"
+        break
+      fi
+    done
+    if [ -z "$ADMIN_SSH_USER" ]; then
+      echo "No configured SSH identity can administer PostgreSQL on $TUNNEL_HOST" >&2
+      exit 1
+    fi
+
+    DB_PASSWORD_B64="$(printf '%s' "$DB_PASSWORD" | base64 | tr -d '\n')"
+    {
+      printf "export DB_PASSWORD_B64='%s'\n" "$DB_PASSWORD_B64"
+      cat <<'REMOTE_BOOTSTRAP'
+    set -eu
+    DB_PASSWORD="$(printf '%s' "$DB_PASSWORD_B64" | base64 -d)"
+    sudo -n -u postgres psql -X -v ON_ERROR_STOP=1 \
+      -v role_name=discourse -v role_password="$DB_PASSWORD" <<'SQL'
+    SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 60 PASSWORD %L', :'role_name', :'role_password')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name') \gexec
+    SELECT format('ALTER ROLE %I WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 60 PASSWORD %L', :'role_name', :'role_password') \gexec
+    ALTER ROLE discourse SET statement_timeout = '120s';
+    ALTER ROLE discourse SET lock_timeout = '30s';
+    ALTER ROLE discourse SET idle_in_transaction_session_timeout = '120s';
+    SQL
+    if sudo -n -u postgres psql -AtX -c "SELECT 1 FROM pg_database WHERE datname = 'discourse';" | grep -qx 1; then
+      echo "Database discourse already exists; preserving it"
+    else
+      sudo -n -u postgres createdb -O discourse -E UTF8 discourse
+      echo "Created database discourse"
+    fi
+    sudo -n -u postgres psql -X -v ON_ERROR_STOP=1 <<'SQL'
+    ALTER DATABASE discourse OWNER TO discourse;
+    REVOKE ALL ON DATABASE discourse FROM PUBLIC;
+    GRANT CONNECT, TEMPORARY ON DATABASE discourse TO discourse;
+    SQL
+    REMOTE_BOOTSTRAP
+    } | ssh_command "$ADMIN_SSH_USER@$TUNNEL_HOST" bash -s
+
+    vault policy write discourse - <<'EOF'
+    path "secret/data/discourse_db_password" {
+      capabilities = ["read"]
+    }
+    path "secret/data/discourse_secret_key_base" {
+      capabilities = ["read"]
+    }
+    path "secret/data/discourse_admin_password" {
+      capabilities = ["read"]
+    }
+    path "secret/data/discourse_integration_api_key" {
+      capabilities = ["read"]
+    }
+    path "secret/data/directus_db_ssh_tunnel_host" {
+      capabilities = ["read"]
+    }
+    path "secret/data/directus_db_ssh_private_key_b64" {
+      capabilities = ["read"]
+    }
+    path "secret/data/redis" {
+      capabilities = ["read"]
+    }
+    path "secret/data/cloudflare-smtp-secret" {
+      capabilities = ["read"]
+    }
+    path "secret/data/graphql-kafka-async-username" {
+      capabilities = ["read"]
+    }
+    path "secret/data/graphql-kafka-async-password" {
+      capabilities = ["read"]
+    }
+    EOF
+
+    vault write auth/kubernetes/role/discourse \
+      bound_service_account_names="discourse-external-secrets,discourse,discourse-admin-bootstrap,discourse-async-worker,discourse-backup" \
+      bound_service_account_namespaces="discourse" \
+      policies="discourse" \
+      ttl="1h" >/dev/null
+
+    echo "Discourse database and Vault access policy are ready"

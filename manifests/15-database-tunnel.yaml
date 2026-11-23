@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discourse-db-tunnel
+  namespace: discourse
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  start.sh: |
+    #!/bin/sh
+    set -eu
+
+    apk add --no-cache openssh-client netcat-openbsd >/dev/null
+    : "${DB_TUNNEL_HOST:?DB_TUNNEL_HOST is required}"
+    : "${DB_TUNNEL_PRIVATE_KEY_B64:?DB_TUNNEL_PRIVATE_KEY_B64 is required}"
+
+    mkdir -p /tmp/discourse-db-tunnel
+    key_file=/tmp/discourse-db-tunnel/id_ed25519
+    known_hosts=/tmp/discourse-db-tunnel/known_hosts
+    if printf '%s' "$DB_TUNNEL_PRIVATE_KEY_B64" | base64 --decode >"$key_file" 2>/dev/null; then
+      true
+    elif printf '%s' "$DB_TUNNEL_PRIVATE_KEY_B64" | base64 -d >"$key_file" 2>/dev/null; then
+      true
+    else
+      printf '%s' "$DB_TUNNEL_PRIVATE_KEY_B64" | base64 -D >"$key_file"
+    fi
+    chmod 600 "$key_file"
+    touch "$known_hosts"
+
+    postgres_probe() {
+      reply="$(
+        printf '\000\000\000\010\004\322\026/' |
+          nc -w 2 127.0.0.1 15432 |
+          od -An -tx1 |
+          tr -d ' \n' || true
+      )"
+      case "$reply" in
+        53*|4e*) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+
+    while true; do
+      for candidate in directus_tunnel ubuntu opc; do
+        error_file="/tmp/discourse-db-tunnel/ssh-$candidate.err"
+        : >"$error_file"
+        echo "Starting Oracle PostgreSQL SSH tunnel with user $candidate"
+        ssh -N \
+          -i "$key_file" \
+          -o ExitOnForwardFailure=yes \
+          -o IdentitiesOnly=yes \
+          -o BatchMode=yes \
+          -o ConnectTimeout=10 \
+          -o ConnectionAttempts=1 \
+          -o StrictHostKeyChecking=accept-new \
+          -o UserKnownHostsFile="$known_hosts" \
+          -o ServerAliveInterval=30 \
+          -o ServerAliveCountMax=3 \
+          -L "127.0.0.1:15432:127.0.0.1:5432" \
+          "$candidate@$DB_TUNNEL_HOST" 2>"$error_file" &
+        tunnel_pid=$!
+
+        waited=0
+        verified=false
+        while [ "$waited" -lt 15 ]; do
+          kill -0 "$tunnel_pid" >/dev/null 2>&1 || break
+          if postgres_probe; then
+            verified=true
+            echo "Oracle PostgreSQL SSH tunnel is ready with user $candidate"
+            break
+          fi
+          sleep 1
+          waited=$((waited + 1))
+        done
+
+        if [ "$verified" = true ]; then
+          wait "$tunnel_pid" || true
+          echo "Oracle PostgreSQL SSH tunnel disconnected; reconnecting"
+        else
+          tail -n 2 "$error_file" >&2 || true
+          kill "$tunnel_pid" >/dev/null 2>&1 || true
+          wait "$tunnel_pid" >/dev/null 2>&1 || true
+        fi
+        sleep 2
+      done
+      sleep 3
+    done

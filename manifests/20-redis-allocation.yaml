@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discourse-redis-allocation
+  namespace: discourse
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  allocation.yaml: |
+    schema_version: "1.0.0"
+    endpoint: redis-primary.redis.svc.cluster.local:6379
+    allocations:
+      - logical_database: 4
+        owner: discourse
+        purpose: Discourse cache, sessions, jobs, and MessageBus
+        durable_system_of_record: false
+      - logical_database: 5
+        owner: discourse-async-worker
+        purpose: Short-lived GraphQL async request idempotency records
+        durable_system_of_record: false
+        key_prefix: discourse:async:
+        expiry_seconds: 86400
+    rules:
+      - PostgreSQL and the Discourse shared volume remain the durable systems of record.
+      - Async idempotency records must always expire.
+      - Credentials come from discourse-runtime and are never stored in values.

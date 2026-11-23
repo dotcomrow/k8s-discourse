@@ -1,0 +1,295 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discourse-async-worker
+  namespace: discourse
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+data:
+  worker.py: |
+    import json
+    import os
+    import signal
+    import socket
+    import time
+    import traceback
+    from datetime import datetime, timezone
+    from urllib.parse import quote
+
+    import redis
+    import requests
+    from kafka import KafkaConsumer, KafkaProducer
+    from kafka.structs import OffsetAndMetadata, TopicPartition
+
+    REQUEST_TOPIC = "graphql.async.requests.v1"
+    RESPONSE_TOPIC = "graphql.async.responses.v1"
+    CONSUMER_GROUP = "graphql-operation-discourse-v1"
+    HANDLER = "discourse"
+    WORKER_ID = socket.gethostname()
+    DISCOURSE_URL = os.environ.get("DISCOURSE_URL", "http://discourse.discourse.svc.cluster.local").rstrip("/")
+    API_KEY = os.environ["DISCOURSE_INTEGRATION_API_KEY"]
+    API_USERNAME = os.environ.get("DISCOURSE_API_USERNAME", "administrator")
+    HEARTBEAT_PATH = "/tmp/health/heartbeat"
+    RUNNING = True
+
+    def iso_now():
+      return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def log(message):
+      print(f"[{iso_now()}] {message}", flush=True)
+
+    def stop(signum, _frame):
+      global RUNNING
+      RUNNING = False
+      log(f"Received signal {signum}; stopping")
+
+    def heartbeat():
+      os.makedirs(os.path.dirname(HEARTBEAT_PATH), exist_ok=True)
+      with open(HEARTBEAT_PATH, "w", encoding="utf-8") as handle:
+        handle.write(str(time.time()))
+
+    def kafka_config():
+      return {
+        "bootstrap_servers": os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka.kafka.svc.internal.lan:9092").split(","),
+        "security_protocol": "SASL_PLAINTEXT",
+        "sasl_mechanism": "SCRAM-SHA-256",
+        "sasl_plain_username": os.environ["KAFKA_SASL_USERNAME"],
+        "sasl_plain_password": os.environ["KAFKA_SASL_PASSWORD"],
+      }
+
+    def publish(producer, reply_topic, request_id, client_id, status, metadata, **extra):
+      message = {
+        "spec_version": "async.response.v1",
+        "request_id": request_id,
+        "client_id": client_id,
+        "status": status,
+        "metadata": {**metadata, "worker": WORKER_ID, "handler": HANDLER},
+        **extra,
+      }
+      if status in ("succeeded", "failed", "cancelled"):
+        message["completed_at"] = iso_now()
+      encoded = json.dumps(message, separators=(",", ":"), ensure_ascii=False)
+      producer.send(reply_topic, key=request_id.encode(), value=encoded.encode()).get(timeout=20)
+      return encoded
+
+    def commit(consumer, record):
+      partition = TopicPartition(record.topic, record.partition)
+      try:
+        offset = OffsetAndMetadata(record.offset + 1, "", -1)
+      except TypeError:
+        offset = OffsetAndMetadata(record.offset + 1, "")
+      consumer.commit({partition: offset})
+
+    def discourse_request(method, path, payload=None, params=None):
+      response = requests.request(
+        method,
+        f"{DISCOURSE_URL}{path}",
+        headers={"Api-Key": API_KEY, "Api-Username": API_USERNAME, "Accept": "application/json"},
+        json=payload,
+        params=params,
+        timeout=(5, 30),
+      )
+      if response.status_code >= 400:
+        body = response.text[:1000]
+        raise RuntimeError(f"Discourse API returned HTTP {response.status_code}: {body}")
+      if not response.content:
+        return {}
+      return response.json()
+
+    def execute(operation, payload):
+      if operation == "categories.list":
+        result = discourse_request("GET", "/categories.json")
+        return {"categories": result.get("category_list", {}).get("categories", [])}
+      if operation == "topics.list":
+        result = discourse_request("GET", "/latest.json", params={"page": payload.get("page", 0)})
+        return {"topic_list": result.get("topic_list", {})}
+      if operation == "topics.create":
+        required = ("title", "raw")
+        missing = [key for key in required if not str(payload.get(key) or "").strip()]
+        if missing:
+          raise ValueError(f"missing required payload fields: {','.join(missing)}")
+        body = {"title": payload["title"], "raw": payload["raw"]}
+        if payload.get("category") is not None:
+          body["category"] = payload["category"]
+        return discourse_request("POST", "/posts.json", payload=body)
+      if operation == "posts.create":
+        if not payload.get("topic_id") or not str(payload.get("raw") or "").strip():
+          raise ValueError("topic_id and raw are required")
+        return discourse_request("POST", "/posts.json", payload={"topic_id": payload["topic_id"], "raw": payload["raw"]})
+      if operation == "users.lookup":
+        username = str(payload.get("username") or "").strip()
+        if not username:
+          raise ValueError("username is required")
+        return discourse_request("GET", f"/u/{quote(username, safe='')}.json")
+      raise ValueError(f"unsupported operation: {operation}")
+
+    def main():
+      signal.signal(signal.SIGTERM, stop)
+      signal.signal(signal.SIGINT, stop)
+      common = kafka_config()
+      consumer = KafkaConsumer(
+        REQUEST_TOPIC,
+        group_id=CONSUMER_GROUP,
+        enable_auto_commit=False,
+        auto_offset_reset="latest",
+        consumer_timeout_ms=1000,
+        max_poll_records=10,
+        **common,
+      )
+      producer = KafkaProducer(acks="all", retries=10, **common)
+      cache = redis.Redis(
+        host="redis-primary.redis.svc.cluster.local",
+        port=6379,
+        db=5,
+        password=os.environ["DISCOURSE_REDIS_PASSWORD"],
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        decode_responses=True,
+      )
+      cache.ping()
+      log(f"Discourse async worker started handler={HANDLER} group={CONSUMER_GROUP}")
+      try:
+        while RUNNING:
+          heartbeat()
+          batches = consumer.poll(timeout_ms=1000, max_records=10)
+          for records in batches.values():
+            for record in records:
+              envelope = {}
+              try:
+                envelope = json.loads(record.value.decode())
+                route = envelope.get("route") if isinstance(envelope.get("route"), dict) else {}
+                if str(route.get("handler") or "").strip().lower() != HANDLER:
+                  commit(consumer, record)
+                  continue
+                request_id = str(envelope.get("request_id") or record.key.decode()).strip()
+                if not request_id:
+                  raise ValueError("request_id is required")
+                client_id = str(envelope.get("client_id") or "")
+                operation = str(route.get("operation") or "").strip().lower()
+                payload = envelope.get("payload") if isinstance(envelope.get("payload"), dict) else {}
+                options = envelope.get("options") if isinstance(envelope.get("options"), dict) else {}
+                metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+                reply_topic = str(options.get("reply_topic") or RESPONSE_TOPIC)
+                cache_key = f"discourse:async:{request_id}"
+                cached = cache.get(cache_key)
+                if cached:
+                  producer.send(reply_topic, key=request_id.encode(), value=cached.encode()).get(timeout=20)
+                  commit(consumer, record)
+                  continue
+                publish(
+                  producer, reply_topic, request_id, client_id, "running", metadata,
+                  progress={"sequence": 1, "percent": 10, "message": "Discourse operation accepted", "updated_at": iso_now()},
+                )
+                result = execute(operation, payload)
+                encoded = publish(
+                  producer, reply_topic, request_id, client_id, "succeeded", metadata,
+                  progress={"sequence": 2, "percent": 100, "message": "Discourse operation completed", "updated_at": iso_now()},
+                  response_payload=result,
+                )
+                cache.setex(cache_key, 86400, encoded)
+                commit(consumer, record)
+              except Exception as exc:
+                traceback.print_exc()
+                route = envelope.get("route") if isinstance(envelope, dict) and isinstance(envelope.get("route"), dict) else {}
+                if str(route.get("handler") or "").strip().lower() != HANDLER:
+                  commit(consumer, record)
+                  continue
+                request_id = str(envelope.get("request_id") or "").strip()
+                if request_id:
+                  options = envelope.get("options") if isinstance(envelope.get("options"), dict) else {}
+                  metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+                  publish(
+                    producer,
+                    str(options.get("reply_topic") or RESPONSE_TOPIC),
+                    request_id,
+                    str(envelope.get("client_id") or ""),
+                    "failed",
+                    metadata,
+                    error_payload={"code": "DISCOURSE_OPERATION_FAILED", "message": str(exc), "retryable": isinstance(exc, (requests.RequestException, redis.RedisError))},
+                  )
+                commit(consumer, record)
+      finally:
+        producer.flush(timeout=10)
+        producer.close(timeout=10)
+        consumer.close()
+        cache.close()
+
+    if __name__ == "__main__":
+      main()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discourse-async-worker
+  namespace: discourse
+  labels:
+    app.kubernetes.io/name: discourse
+    app.kubernetes.io/component: async-worker
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: discourse
+      app.kubernetes.io/component: async-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: discourse
+        app.kubernetes.io/component: async-worker
+      annotations:
+        linkerd.io/inject: "disabled"
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: discourse-async-worker
+      containers:
+        - name: worker
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              set -euo pipefail
+              pip install --user --no-cache-dir --disable-pip-version-check \
+                "kafka-python>=2.3.0,<3.0.0" \
+                "redis>=5.2.0,<6.0.0" \
+                "requests>=2.32.0,<3.0.0"
+              exec python /opt/worker/worker.py
+          envFrom:
+            - secretRef:
+                name: discourse-runtime
+          env:
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: HOME, value: /tmp }
+            - { name: PYTHONUSERBASE, value: /tmp/python }
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka.kafka.svc.internal.lan:9092" }
+            - { name: DISCOURSE_URL, value: "http://discourse.discourse.svc.cluster.local" }
+            - { name: DISCOURSE_API_USERNAME, value: administrator }
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "test -s /tmp/health/heartbeat && test $(( $(date +%s) - $(cut -d. -f1 /tmp/health/heartbeat) )) -lt 30"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "test -s /tmp/health/heartbeat && test $(( $(date +%s) - $(cut -d. -f1 /tmp/health/heartbeat) )) -lt 120"]
+            initialDelaySeconds: 45
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+          volumeMounts:
+            - name: worker
+              mountPath: /opt/worker
+              readOnly: true
+      volumes:
+        - name: worker
+          configMap:
+            name: discourse-async-worker

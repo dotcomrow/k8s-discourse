@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discourse-admin-bootstrap
+  namespace: discourse
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+data:
+  admin.rb: |
+    # frozen_string_literal: true
+
+    require "digest"
+
+    email = "administrator@suncoast.systems"
+    username = "administrator"
+    password = ENV.fetch("DISCOURSE_ADMIN_PASSWORD")
+    raw_api_key = ENV.fetch("DISCOURSE_INTEGRATION_API_KEY")
+
+    admin = User.find_by_email(email) || User.new(email: email, username: username)
+    admin.username = username if admin.username.blank?
+    admin.password = password
+    admin.active = true
+    admin.save!
+    admin.grant_admin! unless admin.admin?
+    admin.change_trust_level!(1) if admin.trust_level < 1
+    admin.email_tokens.update_all(confirmed: true)
+    admin.activate
+
+    api_key = ApiKey.find_or_initialize_by(description: "Suncoast Kafka integration")
+    api_key.user = admin
+    api_key.created_by = admin
+    api_key.scope_mode = :global
+    api_key.key_hash = ApiKey.hash_key(raw_api_key)
+    api_key.truncated_key = raw_api_key[0, 4]
+    api_key.revoked_at = nil
+    api_key.save!
+
+    puts "Discourse administrator and Kafka integration API key are reconciled"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: discourse-admin-bootstrap
+  namespace: discourse
+  labels:
+    app.kubernetes.io/name: discourse
+    app.kubernetes.io/component: admin-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: discourse
+        app.kubernetes.io/component: admin-bootstrap
+      annotations:
+        config.linkerd.io/skip-outbound-ports: "22,6379"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: discourse-admin-bootstrap
+      initContainers:
+        - name: database-tunnel
+          image: alpine:3.22
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          command: ["/bin/sh", "/opt/tunnel/start.sh"]
+          env:
+            - name: DB_TUNNEL_HOST
+              valueFrom:
+                secretKeyRef: { name: discourse-db-tunnel, key: DB_TUNNEL_HOST }
+            - name: DB_TUNNEL_PRIVATE_KEY_B64
+              valueFrom:
+                secretKeyRef: { name: discourse-db-tunnel, key: DB_TUNNEL_PRIVATE_KEY_B64 }
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "-c", "nc -z 127.0.0.1 15432"]
+            periodSeconds: 2
+            failureThreshold: 60
+          volumeMounts:
+            - name: database-tunnel-script
+              mountPath: /opt/tunnel
+              readOnly: true
+      containers:
+        - name: bootstrap
+          image: ghcr.io/dotcomrow/discourse:97c86cedd020484e0fd51e8739ade8474352fec7
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              cd /var/www/discourse
+              exec sudo -H -E -u discourse bundle exec rails runner /opt/bootstrap/admin.rb
+          envFrom:
+            - secretRef:
+                name: discourse-runtime
+          env:
+            - { name: RAILS_ENV, value: production }
+            - { name: DISCOURSE_HOSTNAME, value: discourse.teleport.app.suncoast.systems }
+            - { name: DISCOURSE_DB_SOCKET, value: "" }
+            - { name: DISCOURSE_DB_HOST, value: "127.0.0.1" }
+            - { name: DISCOURSE_DB_PORT, value: "15432" }
+            - { name: DISCOURSE_DB_NAME, value: discourse }
+            - { name: DISCOURSE_DB_USERNAME, value: discourse }
+            - { name: DISCOURSE_REDIS_HOST, value: redis-primary.redis.svc.cluster.local }
+            - { name: DISCOURSE_REDIS_PORT, value: "6379" }
+            - { name: DISCOURSE_REDIS_DB, value: "4" }
+          volumeMounts:
+            - name: admin-bootstrap
+              mountPath: /opt/bootstrap
+              readOnly: true
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: database-tunnel-script
+          configMap:
+            name: discourse-db-tunnel
+            defaultMode: 0555
+        - name: admin-bootstrap
+          configMap:
+            name: discourse-admin-bootstrap
+        - name: shared
+          persistentVolumeClaim:
+            claimName: discourse-shared
