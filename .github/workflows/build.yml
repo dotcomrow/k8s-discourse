@@ -45,6 +45,7 @@ jobs:
       - name: Build launcher
         run: |
           set -euo pipefail
+          rm -f /tmp/discourse_docker/launcher
           cd /tmp/discourse_launcher/v2
           go build -trimpath -o /tmp/discourse_docker/launcher .
 
