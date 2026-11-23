@@ -30,6 +30,7 @@ abort "Discourse source commit is not pinned" unless commit
 
 rendered = files.map { |file| File.read(file) }.join("\n")
 abort "Manifest image does not match pinned Discourse commit" unless rendered.include?("ghcr.io/dotcomrow/discourse:#{commit}")
+abort "Suncoast image variant is not immutable" unless rendered.include?("ghcr.io/dotcomrow/discourse:#{commit}-suncoast1")
 abort "Oracle SSH tunnel secrets are not reused" unless rendered.include?("directus_db_ssh_private_key_b64")
 abort "GraphQL async request contract missing" unless rendered.include?("graphql.async.requests.v1")
 abort "GraphQL async response contract missing" unless rendered.include?("graphql.async.responses.v1")

@@ -37,7 +37,7 @@ GraphQL async Kafka principal.
 
 The `build.yml` workflow builds and publishes:
 
-- `ghcr.io/dotcomrow/discourse:97c86cedd020484e0fd51e8739ade8474352fec7`
+- `ghcr.io/dotcomrow/discourse:97c86cedd020484e0fd51e8739ade8474352fec7-suncoast1`
 - `ghcr.io/dotcomrow/discourse:latest`
 
 The manifest uses the immutable tag. Updating Discourse requires changing the

@@ -35,3 +35,5 @@ volumes:
 
 run:
   - exec: echo "Suncoast Discourse image build complete"
+  - exec:
+      cmd: sed -i '/listen \[::\]:80;/d' /etc/nginx/conf.d/outlets/server/10-http.conf

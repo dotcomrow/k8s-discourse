@@ -21,6 +21,7 @@ env:
   DISCOURSE_DOCKER_COMMIT: 93c8e629ea2b0960a4261b69a405e7d10f61a1ea
   LAUNCHER_COMMIT: b338c1ec1913da37959ab24b042ebf57d09f2607
   IMAGE: ghcr.io/dotcomrow/discourse
+  IMAGE_TAG: 97c86cedd020484e0fd51e8739ade8474352fec7-suncoast1
 
 jobs:
   build:
@@ -58,10 +59,10 @@ jobs:
             --conf-dir=/tmp/discourse_docker/containers \
             --templates-dir=/tmp/discourse_docker \
             build \
-            --tag "${IMAGE}:${DISCOURSE_COMMIT}" \
+            --tag "${IMAGE}:${IMAGE_TAG}" \
             discourse \
             --push \
             --tag "${IMAGE}:latest"
 
       - name: Record published image
-        run: docker buildx imagetools inspect "${IMAGE}:${DISCOURSE_COMMIT}"
+        run: docker buildx imagetools inspect "${IMAGE}:${IMAGE_TAG}"
