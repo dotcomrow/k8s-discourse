@@ -18,7 +18,7 @@ data:
 
     admin = User.find_by_email(email) || User.new(email: email, username: username)
     admin.username = username if admin.username.blank?
-    admin.password = password
+    admin.password = password unless admin.persisted? && admin.confirm_password?(password)
     admin.active = true
     admin.save!
     admin.grant_admin! unless admin.admin?
