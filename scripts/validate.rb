@@ -53,5 +53,14 @@ abort "Nested Discourse Vault secret is forbidden" if rendered.include?('secret/
 abort "Existing GitHub Packages pull credentials are not reused" unless rendered.include?('key: k8s-rules-engine-github-packages-token, property: value')
 abort "Discourse image pull secret is not referenced" unless rendered.scan('name: discourse-ghcr').length >= 4
 abort "PostgreSQL vector extension bootstrap is missing" unless rendered.include?('CREATE EXTENSION IF NOT EXISTS vector;')
+abort "Discourse OIDC is not enabled" unless rendered.include?('DISCOURSE_OPENID_CONNECT_ENABLED')
+abort "Discourse OIDC must use the internal Keycloak realm" unless rendered.include?('https://auth.suncoast.systems/realms/internal/.well-known/openid-configuration')
+abort "Discourse OIDC must use public-client PKCE" unless rendered.include?('DISCOURSE_OPENID_CONNECT_USE_PKCE')
+abort "Discourse OIDC membership claim is missing" unless rendered.include?('DISCOURSE_OPENID_CONNECT_GROUPS_CLAIM, value: suncoast_roles')
+abort "Discourse administrator group reconciliation is missing" unless rendered.include?('oidc_admin_group_name = "k8s_discourse_admins"')
+
+image_config = File.read(File.join(ROOT, "containers", "discourse.yml"))
+abort "Suncoast OIDC administrator sync plugin is missing" unless image_config.include?('ADMIN_ROLE = "k8s_discourse_admins"')
+abort "Suncoast OIDC administrator revocation is missing" unless image_config.include?("user.revoke_admin!")
 
 puts "Validated #{documents.length} Kubernetes resources across #{files.length} files"

@@ -12,6 +12,12 @@ GitOps source for the Suncoast Systems Discourse deployment.
   Discourse and database 5 for short-lived worker idempotency records.
 - The native Discourse UI is enrolled in Teleport at
   `discourse.teleport.app.suncoast.systems`.
+- Discourse uses the Keycloak `internal` realm through a public PKCE client.
+  The GitHub team `k8s_discourse_admins` is emitted in the `suncoast_roles`
+  claim and reconciled to Discourse administrator status at login. Removing a
+  user from the team revokes that status on their next OIDC membership sync.
+- The bootstrap `administrator` account remains available for recovery and for
+  the Kafka integration API key; it is not governed by the GitHub team.
 - Suncoast customer applications do not call the Discourse API directly. They
   use the existing `graphql.async.requests.v1` / `graphql.async.responses.v1`
   Kafka contract with `route.handler: discourse`.
