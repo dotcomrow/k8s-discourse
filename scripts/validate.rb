@@ -49,5 +49,6 @@ end
 abort "Nested Discourse Vault secret is forbidden" if rendered.include?('secret/data/discourse"')
 abort "Existing GitHub Packages pull credentials are not reused" unless rendered.include?('key: k8s-rules-engine-github-packages-token, property: value')
 abort "Discourse image pull secret is not referenced" unless rendered.scan('name: discourse-ghcr').length >= 4
+abort "PostgreSQL vector extension bootstrap is missing" unless rendered.include?('CREATE EXTENSION IF NOT EXISTS vector;')
 
 puts "Validated #{documents.length} Kubernetes resources across #{files.length} files"

@@ -114,6 +114,9 @@ data:
     REVOKE ALL ON DATABASE discourse FROM PUBLIC;
     GRANT CONNECT, TEMPORARY ON DATABASE discourse TO discourse;
     SQL
+    sudo -n -u postgres psql -X -v ON_ERROR_STOP=1 -d discourse <<'SQL'
+    CREATE EXTENSION IF NOT EXISTS vector;
+    SQL
     REMOTE_BOOTSTRAP
     } | ssh_command "$ADMIN_SSH_USER@$TUNNEL_HOST" bash -s
 
