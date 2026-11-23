@@ -4,8 +4,10 @@ metadata:
   name: discourse
   labels:
     app.kubernetes.io/name: discourse
+    field.cattle.io/projectId: applications
     platform.suncoast.systems/autosize: enabled
     linkerd.io/inject: enabled
   annotations:
     argocd.argoproj.io/sync-wave: "-3"
     config.linkerd.io/skip-outbound-ports: "22,6379,9092"
+    field.cattle.io/projectId: local:applications
