@@ -40,11 +40,15 @@ The `build.yml` workflow builds and publishes:
 - `ghcr.io/dotcomrow/discourse:97c86cedd020484e0fd51e8739ade8474352fec7-suncoast1`
 - `ghcr.io/dotcomrow/discourse:latest`
 
-The manifest uses the immutable tag. Updating Discourse requires changing the
-pinned source commit and immutable image tag together.
+The manifests deliberately deploy `ghcr.io/dotcomrow/discourse:latest` with
+`imagePullPolicy: Always`. The immutable tag remains available for build audit
+and rollback, but publishing a replacement `latest` image does not require a
+manifest tag change. Because Kubernetes does not restart an unchanged workload
+when a mutable tag moves, the deployment still needs to be restarted through
+the operator-controlled rollout process to consume the newly published image.
 
 ## Validation
 
 Run `./scripts/validate.sh`. The validator checks every manifest, duplicate
-Kubernetes identities, embedded shell syntax, immutable image/source alignment,
+Kubernetes identities, embedded shell syntax, the `latest` deployment contract,
 and the expected platform contracts.

@@ -29,8 +29,10 @@ commit = source[/version:\s*["']?([0-9a-f]{40})/, 1]
 abort "Discourse source commit is not pinned" unless commit
 
 rendered = files.map { |file| File.read(file) }.join("\n")
-abort "Manifest image does not match pinned Discourse commit" unless rendered.include?("ghcr.io/dotcomrow/discourse:#{commit}")
-abort "Suncoast image variant is not immutable" unless rendered.include?("ghcr.io/dotcomrow/discourse:#{commit}-suncoast1")
+deployed_images = rendered.scan(%r{image:\s*(ghcr\.io/dotcomrow/discourse:[^\s]+)}).flatten
+abort "Discourse deployment images are missing" if deployed_images.empty?
+abort "Discourse deployments must use the latest image" unless deployed_images.all? { |image| image == "ghcr.io/dotcomrow/discourse:latest" }
+abort "Every Discourse deployment must pull latest" unless rendered.scan("imagePullPolicy: Always").length >= deployed_images.length
 abort "Oracle SSH tunnel secrets are not reused" unless rendered.include?("directus_db_ssh_private_key_b64")
 abort "GraphQL async request contract missing" unless rendered.include?("graphql.async.requests.v1")
 abort "GraphQL async response contract missing" unless rendered.include?("graphql.async.responses.v1")

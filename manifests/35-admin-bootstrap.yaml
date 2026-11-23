@@ -87,7 +87,7 @@ spec:
               readOnly: true
       containers:
         - name: bootstrap
-          image: ghcr.io/dotcomrow/discourse:97c86cedd020484e0fd51e8739ade8474352fec7-suncoast1
+          image: ghcr.io/dotcomrow/discourse:latest
           imagePullPolicy: Always
           command: ["/bin/bash", "-lc"]
           args:
