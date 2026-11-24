@@ -69,6 +69,7 @@ spec:
                 name: discourse-runtime
           env:
             - { name: DISCOURSE_HOSTNAME, value: discourse.teleport.app.suncoast.systems }
+            - { name: DISCOURSE_FORCE_HTTPS, value: "true" }
             - { name: DISCOURSE_DEVELOPER_EMAILS, value: administrator@suncoast.systems }
             - { name: DISCOURSE_OPENID_CONNECT_ENABLED, value: "true" }
             - { name: DISCOURSE_OPENID_CONNECT_DISCOVERY_DOCUMENT, value: "https://auth.suncoast.systems/realms/internal/.well-known/openid-configuration" }

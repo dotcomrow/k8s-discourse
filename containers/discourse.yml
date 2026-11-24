@@ -11,6 +11,7 @@ env:
   LANG: en_US.UTF-8
   LANGUAGE: en_US.UTF-8
   DISCOURSE_HOSTNAME: discourse.teleport.app.suncoast.systems
+  DISCOURSE_FORCE_HTTPS: "true"
   DISCOURSE_SMTP_ADDRESS: smtp.mx.cloudflare.net
   DISCOURSE_SMTP_PORT: "465"
   DISCOURSE_SMTP_FORCE_TLS: "true"
