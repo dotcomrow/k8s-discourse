@@ -13,6 +13,8 @@ GitOps source for the Suncoast Systems Discourse deployment.
 - The native Discourse UI is enrolled in Teleport at
   `discourse.teleport.app.suncoast.systems`.
 - Discourse uses the Keycloak `internal` realm through a public PKCE client.
+  Regular interactive accounts are OIDC-only; password, emailed-link, and
+  email-code login are disabled.
   The GitHub team `k8s_discourse_admins` is emitted in the `suncoast_roles`
   claim and reconciled to Discourse administrator status at login. Removing a
   user from the team revokes that status on their next OIDC membership sync.
